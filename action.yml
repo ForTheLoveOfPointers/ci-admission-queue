@@ -1,7 +1,6 @@
 name: 'CI Admission Queue'
 description: >-
-  Cap how many open PRs run heavy CI at once. Admits up to a budget via a
-  label gate; holds the rest and promotes them as slots free.
+  Cap how many open PRs run heavy CI at once. Label-gated admission queue: admit, hold, bypass, exclude. FIFO and priority strategies.
 author: ''
 branding:
   icon: 'git-pull-request'
