@@ -1,6 +1,6 @@
 name: 'CI Admission Queue'
 description: >-
-  Cap how many open PRs run heavy CI at once. Label-gated admission queue: admit, hold, bypass, exclude. FIFO and priority strategies.
+  Cap how many open PRs run heavy CI at once. FIFO and priority strategies.
 author: ''
 branding:
   icon: 'git-pull-request'
