@@ -1,0 +1,33 @@
+# Copy to .github/workflows/queue-scheduler.yml
+# Runs the admission queue: on a timer, and whenever a slot might free up.
+name: CI Admission Queue
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # reconcile every 5 min (catches timed-out / stale state)
+  pull_request:
+    types: [opened, reopened, closed, ready_for_review, converted_to_draft]
+  workflow_dispatch: {}
+
+# One reconcile at a time — never race two schedulers against the label state.
+concurrency:
+  group: ci-admission-queue
+  cancel-in-progress: false
+
+permissions:
+  pull-requests: write # manage the admitted/queued labels
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4 # so the action can read .github/ci-queue.yml
+      - uses: <your-org>/ci-admission-queue@v0
+        with:
+          # Default GITHUB_TOKEN is fine IF your heavy lane triggers on
+          # pull_request:[synchronize] as well as [labeled]. If it triggers ONLY
+          # on [labeled], use a PAT or GitHub App token here — labels added by
+          # GITHUB_TOKEN do not start new workflow runs (GitHub loop-guard).
+          token: ${{ secrets.QUEUE_TOKEN || github.token }}
+          config: .github/ci-queue.yml

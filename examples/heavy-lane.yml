@@ -1,0 +1,19 @@
+# Example consumer: a heavy lane that only runs once a PR is ADMITTED.
+# The gate is one `if:` — everything else is your normal workflow.
+name: Heavy Integration
+
+on:
+  pull_request:
+    # `labeled` starts the run the moment the queue admits the PR.
+    # `synchronize` re-runs it on new pushes while it stays admitted.
+    types: [labeled, synchronize, reopened]
+
+jobs:
+  integration:
+    # Only run when the queue has admitted this PR. Held PRs skip the whole
+    # job (and its cost) until a slot frees and the bot adds the label.
+    if: contains(github.event.pull_request.labels.*.name, 'ci:admitted')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Expensive build + tests run here."

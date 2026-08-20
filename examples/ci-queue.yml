@@ -1,0 +1,32 @@
+# CI Admission Queue config — copy to .github/ci-queue.yml in your repo.
+
+# Max PRs allowed to run heavy CI at once. Tune to your runner/cache budget.
+budget: 8
+
+# fifo  = oldest eligible PRs admitted first (fair).
+# priority = highest-weight label first (see priorityLabels), then oldest.
+strategy: fifo
+
+# Weights for priority mode. Higher = admitted sooner.
+priorityLabels:
+  release: 100
+  hotfix: 100
+
+# PRs with any of these labels skip the queue and never count against budget.
+bypassLabels:
+  - hotfix
+
+# PRs whose changed files ALL match one of these globs are cheap — always
+# admitted, never counted (docs, CI config, etc.). Uses minimatch (dot:true).
+bypassPaths:
+  - "**/*.md"
+  - ".github/**"
+
+# PRs with any of these labels are never auto-admitted (still your call to run).
+excludeLabels:
+  - wip
+  - do-not-queue
+
+# Label the bot manages. Heavy lanes gate on admittedLabel (see examples/).
+admittedLabel: "ci:admitted"
+queuedLabel: "ci:queued"
