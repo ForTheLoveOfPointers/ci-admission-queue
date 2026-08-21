@@ -76,6 +76,21 @@ test('transitions: promote newly-admitted, demote newly-held', () => {
   assert.deepEqual(r.toDemote, [3]); // 3 loses the label
 });
 
+test('stale queue labels are cleared from bypassed and excluded PRs', () => {
+  const prs = [
+    pr(1, { labels: ['ci:queued'], bypass: true }), // became docs-only while queued
+    pr(2, { labels: ['ci:admitted', 'wip'] }), // gained an exclude label while admitted
+    pr(3, { bypass: true }), // never labeled — nothing to clear
+    pr(4, { labels: ['wip'] }), // excluded, never labeled
+  ];
+  const r = computeAdmission(prs, {
+    budget: 4,
+    excludeLabels: ['wip'],
+    queuedLabel: 'ci:queued',
+  });
+  assert.deepEqual(r.toClear.sort(), [1, 2]);
+});
+
 test('budget of 0 holds everything, budget >= n admits all', () => {
   const prs = [pr(1), pr(2)];
   assert.deepEqual(computeAdmission(prs, { budget: 0 }).hold, [1, 2]);
@@ -85,6 +100,38 @@ test('budget of 0 holds everything, budget >= n admits all', () => {
 test('empty input is safe', () => {
   const r = computeAdmission([], { budget: 3 });
   assert.deepEqual(r, {
-    admit: [], hold: [], bypass: [], excluded: [], toPromote: [], toDemote: [],
+    admit: [], hold: [], bypass: [], excluded: [],
+    toPromote: [], toDemote: [], toClear: [],
   });
+});
+
+const { bypassSignature, bypassCacheKey } = require('../src/run');
+
+test('bypass signature is order-independent', () => {
+  assert.equal(
+    bypassSignature(['docs/**', '*.md']),
+    bypassSignature(['*.md', 'docs/**']),
+  );
+});
+
+test('bypass signature changes when the globs change', () => {
+  assert.notEqual(
+    bypassSignature(['docs/**']),
+    bypassSignature(['docs/**', 'README.md']),
+  );
+  // Empty vs. non-empty must differ so removing all globs invalidates verdicts.
+  assert.notEqual(bypassSignature([]), bypassSignature(['docs/**']));
+});
+
+test('bypass cache key binds number, head SHA, base SHA, and globs', () => {
+  const sig = bypassSignature(['docs/**']);
+  const base = bypassCacheKey(7, 'headA', 'baseA', sig);
+  // A moved base branch at the same head must produce a different key.
+  assert.notEqual(base, bypassCacheKey(7, 'headA', 'baseB', sig));
+  // A new head commit must produce a different key.
+  assert.notEqual(base, bypassCacheKey(7, 'headB', 'baseA', sig));
+  // Edited globs must produce a different key.
+  assert.notEqual(base, bypassCacheKey(7, 'headA', 'baseA', bypassSignature([])));
+  // Same inputs are stable across calls.
+  assert.equal(base, bypassCacheKey(7, 'headA', 'baseA', sig));
 });

@@ -1,14 +1,24 @@
 {
   "name": "ci-admission-queue",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Cap how many open PRs run heavy CI at once — a label-gated admission queue as a GitHub Action.",
   "main": "src/run.js",
   "scripts": {
     "test": "node --test"
   },
-  "keywords": ["github-actions", "ci", "queue", "concurrency", "cost"],
+  "keywords": [
+    "github-actions",
+    "ci",
+    "queue",
+    "concurrency",
+    "cost"
+  ],
   "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
+    "@actions/cache": "^4.1.0",
     "@actions/core": "^1.11.1",
     "@actions/github": "^6.0.0",
     "js-yaml": "^4.1.0",

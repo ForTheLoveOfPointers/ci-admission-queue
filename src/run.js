@@ -13,9 +13,12 @@
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const core = require('@actions/core');
 const github = require('@actions/github');
+const cache = require('@actions/cache');
 const yaml = require('js-yaml');
 const { minimatch } = require('minimatch');
 const { computeAdmission } = require('./admit');
@@ -51,6 +54,126 @@ async function isBypassByPaths(octokit, owner, repo, number, bypassPaths) {
     bypassPaths.some((glob) => minimatch(f.filename, glob, { dot: true })));
 }
 
+// --- Bypass cache -----------------------------------------------------------
+//
+// A PR's bypass verdict is a pure function of (its changed-file set, the
+// configured bypass globs). The changed-file set is the `base..head` diff, so
+// the verdict is stable only while BOTH the head SHA and the base SHA hold and
+// the globs are unchanged — advancing the base branch or editing the globs can
+// flip it. We therefore key each verdict on all three and can safely reuse it
+// across runs, which spares one `listFiles` call per open PR. On a 5-minute
+// cron with many PRs that would otherwise burn through the REST rate limit for
+// no reason. Verdicts are stored as a JSON map of
+// `${number}@${head.sha}@${base.sha}@${globsSig}` -> boolean.
+//
+// The map is rebuilt from the currently-open PRs on every save, so entries for
+// closed PRs, superseded SHAs, and stale globs are pruned rather than
+// accumulating forever.
+//
+// Cache entries are branch-scoped by GitHub; the high-frequency caller (the
+// cron scheduler on the default branch) shares one lineage, and PR-triggered
+// runs fall back to it via restore keys. Any cache failure degrades to plain
+// API lookups.
+
+const BYPASS_CACHE_PREFIX = 'ci-admission-queue-bypass-v1';
+
+// A short, order-independent fingerprint of the bypass globs. Folded into each
+// cache key so editing `bypassPaths` invalidates verdicts computed under the
+// old config.
+function bypassSignature(globs) {
+  const norm = [...(globs || [])].sort().join('\n');
+  return crypto.createHash('sha1').update(norm).digest('hex').slice(0, 12);
+}
+
+// The verdict is the `base..head` diff matched against the globs, so all three
+// inputs belong in the key (see the note above).
+function bypassCacheKey(number, headSha, baseSha, globsSig) {
+  return `${number}@${headSha}@${baseSha}@${globsSig}`;
+}
+
+function bypassArchivePath() {
+  return path.join(process.env.RUNNER_TEMP || os.tmpdir(),
+    'ci-admission-queue-bypass.json');
+}
+
+async function loadBypassCache() {
+  if (!cache.isFeatureAvailable()) return null;
+  try {
+    const archive = bypassArchivePath();
+    const restored = await cache.restoreCache(
+      [archive],
+      `${BYPASS_CACHE_PREFIX}-${github.context.runId}`,
+      [BYPASS_CACHE_PREFIX],
+    );
+    return restored ? JSON.parse(fs.readFileSync(archive, 'utf8')) : {};
+  } catch (e) {
+    core.warning(`bypass cache unavailable (${e.message}); using API`);
+    return {};
+  }
+}
+
+async function saveBypassCache(entries) {
+  if (!cache.isFeatureAvailable()) return;
+  try {
+    const archive = bypassArchivePath();
+    fs.writeFileSync(archive, JSON.stringify(entries));
+    await cache.saveCache([archive], `${BYPASS_CACHE_PREFIX}-${github.context.runId}`);
+  } catch (e) {
+    // Re-running the same workflow reuses the run id, so "already exists"
+    // is normal, not a failure.
+    if (String(e.message).includes('already exists')) {
+      core.debug('bypass cache already saved for this run');
+    } else {
+      core.warning(`could not save bypass cache (${e.message})`);
+    }
+  }
+}
+
+/**
+ * Attach a `bypass` flag to each open PR, consulting the cross-run cache
+ * first. PRs whose labels already decide their fate (a bypass label forces
+ * bypass regardless of paths) skip the files API entirely.
+ */
+async function resolveBypassFlags(octokit, owner, repo, openPrs, cfg) {
+  const globs = cfg.bypassPaths || [];
+  const bypassLabels = new Set(cfg.bypassLabels || []);
+  const cached = await loadBypassCache();
+  const globsSig = bypassSignature(globs);
+  // Built from the current open PRs only; whatever ends up here is the entire
+  // next cache, so stale keys drop out instead of accumulating.
+  const next = {};
+  let misses = 0;
+  let hits = 0;
+
+  const prs = [];
+  for (const p of openPrs) {
+    const labels = p.labels.map((l) => (typeof l === 'string' ? l : l.name));
+    let bypass = false;
+    if (globs.length && !labels.some((l) => bypassLabels.has(l))) {
+      const key = bypassCacheKey(p.number, p.head.sha, p.base.sha, globsSig);
+      if (cached && Object.prototype.hasOwnProperty.call(cached, key)) {
+        bypass = Boolean(cached[key]);
+        hits += 1;
+      } else {
+        bypass = await isBypassByPaths(octokit, owner, repo, p.number, globs);
+        misses += 1;
+      }
+      next[key] = bypass;
+    }
+    prs.push({ number: p.number, labels, createdAt: p.created_at, bypass });
+  }
+
+  // Persist when there is new information (a miss) or when pruning changed the
+  // key set; if every verdict came straight from an unchanged cache, skip the
+  // re-upload entirely.
+  if (cached) {
+    const pruned = Object.keys(cached).length !== Object.keys(next).length;
+    if (misses > 0 || pruned) await saveBypassCache(next);
+  }
+  core.info(`bypass check: ${misses} API lookup(s), ${hits} served from cache`);
+  return prs;
+}
+
 async function reconcile(octokit, owner, repo, decision, cfg) {
   const add = (number, labels) =>
     octokit.rest.issues.addLabels({ owner, repo, issue_number: number, labels });
@@ -68,6 +191,12 @@ async function reconcile(octokit, owner, repo, decision, cfg) {
     await remove(number, cfg.admittedLabel);
     await add(number, [cfg.queuedLabel]);
     core.info(`demoted #${number} back to queue`);
+  }
+  // Bypassed/excluded PRs left the queue's world — strip any stale labels.
+  for (const number of decision.toClear) {
+    await remove(number, cfg.admittedLabel);
+    await remove(number, cfg.queuedLabel);
+    core.info(`cleared queue labels from #${number}`);
   }
   // Mark still-held PRs as queued so contributors can see their status.
   const promoted = new Set(decision.toPromote);
@@ -106,12 +235,7 @@ async function main() {
     owner, repo, state: 'open', per_page: 100,
   });
 
-  const prs = [];
-  for (const p of openPrs) {
-    const labels = p.labels.map((l) => (typeof l === 'string' ? l : l.name));
-    const bypass = await isBypassByPaths(octokit, owner, repo, p.number, cfg.bypassPaths);
-    prs.push({ number: p.number, labels, createdAt: p.created_at, bypass });
-  }
+  const prs = await resolveBypassFlags(octokit, owner, repo, openPrs, cfg);
 
   const decision = computeAdmission(prs, cfg);
   core.info(`admit=${decision.admit.length} hold=${decision.hold.length} ` +
@@ -124,4 +248,9 @@ async function main() {
   core.setOutput('held', JSON.stringify(decision.hold));
 }
 
-main().catch((e) => core.setFailed(e.stack || String(e)));
+// Only run when invoked directly (node src/run.js), not when required by a test.
+if (require.main === module) {
+  main().catch((e) => core.setFailed(e.stack || String(e)));
+}
+
+module.exports = { bypassSignature, bypassCacheKey };

@@ -24,6 +24,15 @@ opting a lane in is one `if:` line.
    Adding the label fires the `labeled` event, starting that PR's heavy CI.
    When a PR merges or closes, the next reconcile promotes the next in line.
 
+Reconciles are cheap on rate limits: a bypass verdict is the `base..head` diff
+matched against the configured globs, so it is keyed on the head SHA, the base
+SHA, and a fingerprint of the globs, then cached across runs via the Actions
+cache. A steady-state cron tick makes almost no `files` API calls; a new commit,
+a moved base branch, or an edit to `bypassPaths` invalidates the affected
+entries. The cache is rebuilt from the currently-open PRs each run, so it never
+grows without bound. PRs whose labels already decide their fate (a bypass or
+exclude label) skip the files check entirely.
+
 ## Install
 
 1. Add the config (`.github/ci-queue.yml`) — see [`examples/ci-queue.yml`](examples/ci-queue.yml):

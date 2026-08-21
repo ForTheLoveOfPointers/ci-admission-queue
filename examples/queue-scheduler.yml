@@ -6,7 +6,11 @@ on:
   schedule:
     - cron: '*/5 * * * *' # reconcile every 5 min (catches timed-out / stale state)
   pull_request:
-    types: [opened, reopened, closed, ready_for_review, converted_to_draft]
+    # `labeled`/`unlabeled` make exclude/bypass labels react instantly
+    # instead of waiting for the cron. Note: the queue's own label writes
+    # re-trigger one extra (no-op) reconcile; the concurrency group
+    # serializes it and it stops there.
+    types: [opened, reopened, closed, ready_for_review, converted_to_draft, labeled, unlabeled]
   workflow_dispatch: {}
 
 # One reconcile at a time — never race two schedulers against the label state.
@@ -23,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4 # so the action can read .github/ci-queue.yml
-      - uses: <your-org>/ci-admission-queue@v0
+      - uses: <your-org>/ci-admission-queue@v1
         with:
           # Default GITHUB_TOKEN is fine IF your heavy lane triggers on
           # pull_request:[synchronize] as well as [labeled]. If it triggers ONLY

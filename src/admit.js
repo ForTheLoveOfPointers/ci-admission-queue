@@ -17,7 +17,8 @@
  * @param {string[]} [config.excludeLabels] Labels that are never auto-admitted.
  * @param {Object<string,number>} [config.priorityLabels] label -> weight (priority mode).
  * @param {string} [config.admittedLabel="ci:admitted"]
- * @returns {{admit:number[], hold:number[], bypass:number[], excluded:number[], toPromote:number[], toDemote:number[]}}
+ * @param {string} [config.queuedLabel="ci:queued"]
+ * @returns {{admit:number[], hold:number[], bypass:number[], excluded:number[], toPromote:number[], toDemote:number[], toClear:number[]}}
  */
 function computeAdmission(prs, config = {}) {
   const budget = Number.isFinite(config.budget) ? Math.max(0, config.budget) : 8;
@@ -26,6 +27,7 @@ function computeAdmission(prs, config = {}) {
   const excludeLabels = new Set(config.excludeLabels || []);
   const priorityLabels = config.priorityLabels || {};
   const admittedLabel = config.admittedLabel || 'ci:admitted';
+  const queuedLabel = config.queuedLabel || 'ci:queued';
 
   const hasAny = (pr, set) => pr.labels.some((l) => set.has(l));
 
@@ -63,6 +65,15 @@ function computeAdmission(prs, config = {}) {
   const toPromote = admit.filter((pr) => !isAdmitted(pr)).map((p) => p.number);
   const toDemote = hold.filter((pr) => isAdmitted(pr)).map((p) => p.number);
 
+  // Stale-state cleanup: bypassed and excluded PRs leave the queue's world
+  // entirely, so they must not keep carrying queue labels. Without this, a PR
+  // that becomes docs-only after being queued keeps `ci:queued` forever, and
+  // an admitted PR that gains an exclude label (e.g. wip) keeps occupying a
+  // slot invisibly via `ci:admitted`.
+  const toClear = [...bypass, ...excluded]
+    .filter((pr) => pr.labels.includes(admittedLabel) || pr.labels.includes(queuedLabel))
+    .map((p) => p.number);
+
   return {
     admit: admit.map((p) => p.number),
     hold: hold.map((p) => p.number),
@@ -70,6 +81,7 @@ function computeAdmission(prs, config = {}) {
     excluded: excluded.map((p) => p.number),
     toPromote,
     toDemote,
+    toClear,
   };
 }
 
